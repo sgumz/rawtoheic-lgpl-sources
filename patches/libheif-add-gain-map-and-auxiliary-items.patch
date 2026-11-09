@@ -1,0 +1,158 @@
+--- a/libheif/api/libheif/heif.h
++++ b/libheif/api/libheif/heif.h
+@@ -2677,9 +2677,30 @@
+     int gain_map_metadata_len, const struct heif_color_profile_nclx* derived_image_nclx,
+     struct heif_image_handle** out_image_handle);
+ 
++// RawToHEIC: like heif_context_encode_gain_map_image(), but for a gain map that is already an image
++// item of the context (e.g. a 'grid' of tiles added with heif_context_add_grid_image()). Marks the
++// gain-map item hidden, writes the 'tmap' item (ispe tmap_width x tmap_height, pixi, colr from
++// derived_image_nclx, which is required), links it to base and gain map ('dimg') and groups it with
++// the base ('altr'). tmap_width/height are the alternate image's size after the inputs' transforms.
++LIBHEIF_API
++struct heif_error heif_context_add_gain_map_item(
++    struct heif_context* ctx, const struct heif_image_handle* base_image_handle,
++    const struct heif_image_handle* gain_map_image_handle, const uint8_t* gain_map_metadata,
++    int gain_map_metadata_len, const struct heif_color_profile_nclx* derived_image_nclx,
++    uint32_t tmap_width, uint32_t tmap_height, heif_item_id* out_tmap_item_id);
++
+ #endif
+ 
++// RawToHEIC: marks 'aux_image_handle' (an image item already in the context, e.g. a grid) as a
++// hidden auxiliary image of 'master_image_handle': 'auxC' property with 'aux_type' (a URN) and an
++// 'auxl' reference to the master.
++LIBHEIF_API
++struct heif_error heif_context_add_auxiliary_image_item(struct heif_context* ctx,
++                                                        const struct heif_image_handle* master_image_handle,
++                                                        const struct heif_image_handle* aux_image_handle,
++                                                        const char* aux_type);
+ 
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/libheif/api/libheif/heif.cc
++++ b/libheif/api/libheif/heif.cc
+@@ -3668,11 +3668,103 @@
+ 
+   altr_box->set_item_ids(ids);
+   ctx->context->get_heif_file()->add_entity_group_box(altr_box);
++
++  return heif_error_success;
++}
++
++struct heif_error heif_context_add_gain_map_item(
++    struct heif_context* ctx, const struct heif_image_handle* base_image_handle,
++    const struct heif_image_handle* gain_map_image_handle, const uint8_t* gain_map_metadata,
++    int gain_map_metadata_len, const struct heif_color_profile_nclx* derived_image_nclx,
++    uint32_t tmap_width, uint32_t tmap_height, heif_item_id* out_tmap_item_id) {
++  if (!ctx || !base_image_handle || !gain_map_image_handle || !gain_map_metadata ||
++      !derived_image_nclx) {
++    return {heif_error_Usage_error, heif_suberror_Null_pointer_argument, "NULL argument passed in"};
++  }
++  if (gain_map_metadata_len <= 0 || tmap_width == 0 || tmap_height == 0) {
++    return Error(heif_error_Invalid_input, heif_suberror_Invalid_parameter_value)
++        .error_struct(ctx->context.get());
++  }
++
++  auto file = ctx->context->get_heif_file();
++  auto gain_map_infe = file->get_infe_box(gain_map_image_handle->image->get_id());
++  if (!gain_map_infe) {
++    return Error(heif_error_Usage_error, heif_suberror_Nonexisting_item_referenced)
++        .error_struct(ctx->context.get());
++  }
++  gain_map_infe->set_hidden_item(true);
++
++  std::vector<uint8_t> metadata;
++  metadata.push_back(0);  // version = 0
++  metadata.insert(metadata.end(), gain_map_metadata, gain_map_metadata + gain_map_metadata_len);
++  heif_item_id tmap_item_id = 0;
++  Error error = ctx->context->add_tmap_item(metadata, tmap_item_id);
++  if (error != Error::Ok) {
++    return error.error_struct(ctx->context.get());
++  }
++
++  std::vector<std::shared_ptr<Box>> properties;
++  auto ispe = std::make_shared<Box_ispe>();
++  ispe->set_size(tmap_width, tmap_height);
++  properties.push_back(ispe);
++  auto pixi = std::make_shared<Box_pixi>();
++  pixi->add_channel_bits(10);
++  pixi->add_channel_bits(10);
++  pixi->add_channel_bits(10);
++  properties.push_back(pixi);
++  auto colr = std::make_shared<Box_colr>();
++  auto nclx = std::make_shared<color_profile_nclx>();
++  nclx->set_colour_primaries(derived_image_nclx->color_primaries);
++  nclx->set_transfer_characteristics(derived_image_nclx->transfer_characteristics);
++  nclx->set_matrix_coefficients(derived_image_nclx->matrix_coefficients);
++  nclx->set_full_range_flag(derived_image_nclx->full_range_flag);
++  colr->set_color_profile(nclx);
++  properties.push_back(colr);
++  for (auto& propertyBox : properties) {
++    int index = file->get_ipco_box()->find_or_append_child_box(propertyBox);
++    file->get_ipma_box()->add_property_for_item_ID(
++        tmap_item_id, Box_ipma::PropertyAssociation{propertyBox->is_essential(), uint16_t(index + 1)});
++  }
+ 
++  error = ctx->context->link_gain_map(base_image_handle->image, gain_map_image_handle->image,
++                                      tmap_item_id);
++  if (error != Error::Ok) {
++    return error.error_struct(ctx->context.get());
++  }
++
++  auto altr_box = std::make_shared<Box_EntityToGroup>();
++  altr_box->set_short_type(fourcc("altr"));
++  altr_box->set_group_id(file->get_unused_item_id());
++  altr_box->set_item_ids({tmap_item_id, base_image_handle->image->get_id()});
++  file->add_entity_group_box(altr_box);
++
++  if (out_tmap_item_id) {
++    *out_tmap_item_id = tmap_item_id;
++  }
+   return heif_error_success;
+ }
+ 
+ #endif
++
++struct heif_error heif_context_add_auxiliary_image_item(struct heif_context* ctx,
++                                                        const struct heif_image_handle* master_image_handle,
++                                                        const struct heif_image_handle* aux_image_handle,
++                                                        const char* aux_type) {
++  if (!ctx || !master_image_handle || !aux_image_handle || !aux_type) {
++    return {heif_error_Usage_error, heif_suberror_Null_pointer_argument, "NULL argument passed in"};
++  }
++  auto file = ctx->context->get_heif_file();
++  heif_item_id aux_id = aux_image_handle->image->get_id();
++  auto aux_infe = file->get_infe_box(aux_id);
++  if (!aux_infe) {
++    return Error(heif_error_Usage_error, heif_suberror_Nonexisting_item_referenced)
++        .error_struct(ctx->context.get());
++  }
++  aux_infe->set_hidden_item(true);
++  file->set_auxC_property(aux_id, aux_type);
++  file->add_iref_reference(aux_id, fourcc("auxl"), {master_image_handle->image->get_id()});
++  return heif_error_success;
++}
+ 
+ 
+ struct heif_error heif_context_encode_grid(struct heif_context* ctx,
+--- a/libheif/file.cc
++++ b/libheif/file.cc
+@@ -783,6 +783,16 @@
+ 
+   for (const auto& infe : m_infe_boxes) {
+     max_id = std::max(max_id, infe.second->get_item_ID());
++  }
++
++  // RawToHEIC: entity group IDs share the item ID space (ISO/IEC 23008-12 8.18.3); a new item must
++  // not reuse the 'altr' group ID of a gain map (Apple ImageIO then ignores the gain map).
++  if (m_grpl_box) {
++    for (const auto& box : m_grpl_box->get_all_child_boxes()) {
++      if (auto group = std::dynamic_pointer_cast<Box_EntityToGroup>(box)) {
++        max_id = std::max(max_id, group->get_group_id());
++      }
++    }
+   }
+ 
+   assert(max_id != 0xFFFFFFFF);

@@ -1,0 +1,30 @@
+--- a/libheif/image-items/image_item.cc
++++ b/libheif/image-items/image_item.cc
+@@ -665,11 +665,6 @@
+   if (input_class == heif_image_input_class_normal || input_class == heif_image_input_class_thumbnail) {
+ #endif
+     auto icc_profile = image->get_color_profile_icc();
+-    if (icc_profile) {
+-      auto colr = std::make_shared<Box_colr>();
+-      colr->set_color_profile(icc_profile);
+-      inout_codedImage.properties.push_back(colr);
+-    }
+ 
+ 
+     // save nclx profile
+@@ -693,6 +688,15 @@
+ 
+       auto colr = std::make_shared<Box_colr>();
+       colr->set_color_profile(target_nclx_profile);
++      inout_codedImage.properties.push_back(colr);
++    }
++
++    // RawToHEIC: the ICC 'colr' is associated after the nclx one. Android up to API 33 attaches every
++    // 'colr' property in turn and an nclx box clears the ICC profile, so a file with ICC then nclx
++    // decodes as sRGB there; with nclx first the ICC (Display P3) survives.
++    if (icc_profile) {
++      auto colr = std::make_shared<Box_colr>();
++      colr->set_color_profile(icc_profile);
+       inout_codedImage.properties.push_back(colr);
+     }
+   }

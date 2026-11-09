@@ -1,0 +1,35 @@
+--- a/libheif/file.cc
++++ b/libheif/file.cc
+@@ -192,9 +192,6 @@
+       m_ftyp_box->set_minor_version(0);
+       m_ftyp_box->add_compatible_brand(heif_brand2_mif1);
+       m_ftyp_box->add_compatible_brand(heif_brand2_heic);
+-#if WITH_EXPERIMENTAL_GAIN_MAP
+-      m_ftyp_box->add_compatible_brand(heif_brand2_tmap);
+-#endif
+       break;
+ 
+     case heif_compression_AV1:
+@@ -202,9 +199,6 @@
+       m_ftyp_box->set_minor_version(0);
+       m_ftyp_box->add_compatible_brand(heif_brand2_avif);
+       m_ftyp_box->add_compatible_brand(heif_brand2_mif1);
+-#if WITH_EXPERIMENTAL_GAIN_MAP
+-      m_ftyp_box->add_compatible_brand(heif_brand2_tmap);
+-#endif
+       break;
+ 
+     case heif_compression_VVC:
+--- a/libheif/context.cc	2026-11-07 15:32:44
++++ b/libheif/context.cc	2026-11-07 15:32:44
+@@ -1220,6 +1220,10 @@
+   item_id = tmap_infe->get_item_ID();
+ 
+   m_heif_file->append_iloc_data(item_id, data, 0);
++
++  // RawToHEIC: advertise 'tmap' only in files that contain a tmap item (Android rejects a 'tmap'
++  // brand without one).
++  m_heif_file->get_ftyp_box()->add_compatible_brand(heif_brand2_tmap);
+ 
+   return Error::Ok;
+ }
